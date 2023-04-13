@@ -124,8 +124,10 @@ namespace net {
 			struct sockaddr* ppeeraddr = NULL;
 			socklen_t localaddrlen;
 			socklen_t peeraddrlen;
+			DWORD dwAddressLength = (_isipv6 ? sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in)) + 16;
+
 			assert(_acceptexaddrs);
-			_acceptexaddrs(_recvbuf, _recvlen, sizeof(struct sockaddr_in6) + 16, sizeof(struct sockaddr_in6) + 16,
+			_acceptexaddrs(_recvbuf, _recvlen, dwAddressLength, dwAddressLength,
 				&plocaladdr, &localaddrlen, &ppeeraddr, &peeraddrlen);
 			//addr
 			_sioptr->setAddrs(ppeeraddr);
