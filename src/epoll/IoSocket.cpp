@@ -11,7 +11,7 @@ namespace net
 		_event._ev.data.ptr = &_event;
 
 		isconnect = false;
-		_recv.clear();
+		_recv.reset();
 		_writeBuf = NULL;
 		_writeLen = 0;
 	}

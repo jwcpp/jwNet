@@ -65,6 +65,7 @@ namespace net {
 		void addEpoll(NetLoop * loop, int fd);
 		void close();
 		void setAddrs(struct sockaddr* addrs) { _ipaddr = addrs; }
+		const IPAddres* getAddrs() const { return &_ipaddr; }
 
 	protected:
 		virtual void onConnect(int err) = 0;
