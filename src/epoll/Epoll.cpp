@@ -68,19 +68,26 @@ namespace net
 			void * vdata = _events[i].data.ptr;
 			if (!vdata) continue;
 
-			SEpollEvent* epdata = (SEpollEvent*)vdata;
-			if (epdata->_type == SEpollEvent::eEPV_ACCPET) {
-				SEpollAccept* acceptr = (SEpollAccept*)epdata;
+			SEpollEvent* evt = (SEpollEvent*)vdata;
+			if (evt->_type == SEpollEvent::eEPV_ACCPET) {
+				SEpollAccept* acceptr = (SEpollAccept*)evt;
 				if (acceptr) {
 					acceptr->accept->onEpollAccept(_events[i].events);
 				}
 			}
-			else if (epdata->_type == SEpollEvent::eEPV_SOCKET)
+			else if (evt->_type == SEpollEvent::eEPV_SOCKET)
 			{
-				SEpollSocket* ioptr = (SEpollSocket*)epdata;
-				if (ioptr) {
-					IoSockptr& ptr = ioptr->inptr ? ioptr->inptr : ioptr->outptr;
-					if(ptr) ptr->onEpollEv(_events[i].events);
+				SEpollSocket* evs = (SEpollSocket*)evt;
+				if (evs) {
+					//EPOLLERR: opposite close
+					//EPOLLHUP: shtdown
+					uint32 iev = _events[i].events;
+					IoSockptr ptr = (iev & EPOLLERR || iev & EPOLLHUP) ?
+						std::move(evs->sockptr) : evs->sockptr;
+
+					if (ptr) {
+						ptr->onEpollEv(iev);
+					}
 				}
 			}
 		}

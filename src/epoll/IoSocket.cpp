@@ -3,14 +3,15 @@
 namespace net
 {
 
-	IoSocket::IoSocket()
+	IoSocket::IoSocket():
+		_close(false)
 	{
 		_fd = INVALID_SOCKET;
 		_loop = NULL;
 		_event._type = SEpollEvent::eEPV_SOCKET;
 		_event._ev.data.ptr = &_event;
 
-		isconnect = false;
+		_isconnect = false;
 		_recv.reset();
 		_writeBuf = NULL;
 		_writeLen = 0;
@@ -18,7 +19,7 @@ namespace net
 
 	IoSocket::~IoSocket()
 	{
-		close();
+		finalClose();
 	}
 
 	bool IoSocket::connect(NetLoop* loop, const char* ip, unsigned short port)
@@ -40,13 +41,15 @@ namespace net
 		}
 
 		_event._ev.events = EPOLLET | EPOLLOUT;
-		_event.outptr = shared_from_this();
-		loop->registerEpoll(EPOLL_CTL_ADD, fd, &_event._ev);
+		if (!loop->registerEpoll(EPOLL_CTL_ADD, fd, &_event._ev))
+		{
+			return false;
+		}
 
 		_fd = fd;
 		_loop = loop;
-		isconnect = true;
-
+		_isconnect = true;
+		_event.sockptr = shared_from_this();
 		return true;
 	}
 
@@ -68,13 +71,17 @@ namespace net
 		}
 
 		_event._ev.events = EPOLLET | EPOLLOUT;
-		_event.outptr = shared_from_this();
-		_loop->registerEpoll(EPOLL_CTL_ADD, fd, &_event._ev);
-
+		if (!_loop->registerEpoll(EPOLL_CTL_ADD, fd, &_event._ev))
+		{
+			return false;
+		}
+		
 		_fd = fd;
-		isconnect = true;
+		_isconnect = true;
+		_event.sockptr = shared_from_this();
 		return true;
 	}
+
 	bool IoSocket::write(char* buf, int len)
 	{
 		int ret = send(_fd, buf, len, 0);
@@ -88,8 +95,10 @@ namespace net
 
 			//EPOLLOUT
 			_event._ev.events = _event._ev.events | EPOLLOUT;
-			_event.outptr = shared_from_this();
-			_loop->registerEpoll(EPOLL_CTL_MOD, _fd, &_event._ev);
+			if (!_loop->registerEpoll(EPOLL_CTL_MOD, _fd, &_event._ev)){
+				return false;
+			}
+			_event.sockptr = shared_from_this();
 		}
 		else
 		{
@@ -99,21 +108,25 @@ namespace net
 		return true;
 		
 	}
+
 	bool IoSocket::read(char* buf, int len)
 	{
+		if (buf == NULL || len <= 0) return false;
+
 		if (!(_event._ev.events & EPOLLIN))
 		{
 			_event._ev.events = _event._ev.events | EPOLLIN;
-			_loop->registerEpoll(EPOLL_CTL_MOD, _fd, &_event._ev);
+			if (!_loop->registerEpoll(EPOLL_CTL_MOD, _fd, &_event._ev)){
+				return false;
+			}
+			_event.sockptr = shared_from_this();
 		}
-
-		_event.inptr = shared_from_this();
 
 		_recv._recvBuf = buf;
 		_recv._recvLen = len;
-
-		handleRead();
-
+		if (_recv._hasData) {
+			handleRead();
+		}
 		return true;
 	}
 
@@ -128,142 +141,108 @@ namespace net
 
 	void IoSocket::onEpollEv(uint32 ev)
 	{
-		if (isconnect)
+		if (_isconnect)
 		{
-			int result = 0;
-			if (ev & EPOLLERR || ev & EPOLLHUP)
-			{
-				//WRITE_LOG("IoSocket::onEpollEv EPOLLERR || EPOLLHUP errno: %d error:%s, line:%d\n", errno, strerror(errno), __LINE__);
-				result = errno;
+			_isconnect = false;
+			if (ev & EPOLLERR || ev & EPOLLHUP){
+				this->finalClose(); //reconnect close this socket
+				onConnect(errno == 0 ? 0xffffffff : errno);
 			}
-			else if (ev & EPOLLOUT)
-			{
-				//连接成功
-				result = 0;
-			}
-			else
-			{
-				WRITE_LOG("IoSocket::onEpollEv Handling Exceptions line:%d\n", __LINE__);
-				return;
-			}
-
-			isconnect = false;
-			IoSockptr tmpptr(std::move(_event.outptr));
-			if (result == 0) {
+			else if (ev & EPOLLOUT){ //connect success
 				_event._ev.events = _event._ev.events & ~EPOLLOUT;
 				_loop->registerEpoll(EPOLL_CTL_MOD, _fd, &_event._ev);
+				onConnect(0);
 			}
 			else{
-				this->close();
+				assert(0);
 			}
-			onConnect(result);
 			return;
 		}
 
-		if (ev & EPOLLHUP || ev & EPOLLERR)
-		{
-			WRITE_LOG("IoSocket::onEpollEv EPOLLERR || EPOLLHUP errno: %d error:%s, line:%d\n", errno, strerror(errno), __LINE__);
-			IoSockptr inptr(std::move(_event.inptr));
-			IoSockptr outptr(std::move(_event.outptr));
-			this->close();
-			onRead(0, errno);
+		if (ev & EPOLLHUP ||//shtdown (recive bytes == 0 && errno == 0)
+			ev & EPOLLERR){ //opposite close (errno > 0)
+			onRead(0, errno == 0 ? 0xffffffff: errno);
 			return;
 		}
 
-		//read
+
 		if (ev & EPOLLIN)
 		{
-
-			_recv._isRead = true;
-			handleRead();
-#if 0
-			int ret = recv(_fd, _recvBuf, _recvLen, 0);
-			if (ret < 0){
-				if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK){
-					return;
-				}
-				else{
-					onRead(ret, errno);
-					return;
-				}
+			_recv._hasData = true;
+			if (_recv.isValid()) {
+				handleRead();
 			}
-			else if (ret == 0){
-				//close
-				onRead(ret, errno);
-				return;
-			}
-			onRead(ret, 0);
-#endif
 		}
-
-		//write
-		if (ev & EPOLLOUT)
+		else if (ev & EPOLLOUT)
 		{
 			int err = 0;
-			int ret = send(_fd, _writeBuf, _writeLen, 0);
-			if (ret < 0)
+			while(1)
 			{
-				if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
-					return;
+				int ret = send(_fd, _writeBuf, _writeLen, 0);
+				if (ret < 0)
+				{
+					if (errno == EINTR) continue;
+					if (errno == EAGAIN || errno == EWOULDBLOCK) {
+						return;
+					}
+					else {
+						err = errno;
+					}
 				}
-				else {
-					//onWrite(ret, errno);
-					//return;
-					err = errno;
-				}
-			}
 
-			//取消EPOLLOUT
-			_event._ev.events = _event._ev.events & ~EPOLLOUT;
-			_loop->registerEpoll(EPOLL_CTL_MOD, _fd, &_event._ev);
-			IoSockptr tmpptr(std::move(_event.outptr));
+				//取消EPOLLOUT
+				_event._ev.events = _event._ev.events & ~EPOLLOUT;
+				_loop->registerEpoll(EPOLL_CTL_MOD, _fd, &_event._ev);
 
-			onWrite(ret, err);
+				onWrite(ret, err);
+				return;//exec one
+			};
 		}
 	}
 
-	void IoSocket::handleRead()
+	bool IoSocket::handleRead()
 	{
-		if (!_recv.isValid() || !_recv._isRead) return;
-
-		int result = 0;
-		//while(1){ recv();} ==> 替换成在onRead递归
-		int ret = recv(_fd, _recv._recvBuf, _recv._recvLen, 0);
-		if (ret < 0) {
-			if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
-				return;
-			}
-			else {
-				_recv._isRead = false;
+		while(1)
+		{
+			int result = 0;
+			int bytes = recv(_fd, _recv._recvBuf, _recv._recvLen, 0);
+			if (bytes < 0) {
+				if (errno == EINTR) continue;
+				if (errno == EAGAIN || errno == EWOULDBLOCK) {
+					return false;
+				}
+				_recv._hasData = false;
 				result = errno;
 			}
-		}
-		else if (ret == 0) {
-			//close
-			_recv._isRead = false;
-			result = errno;
-		}
-		else {
-			//ret > 0
-		}
+			else if (bytes == 0){//close
+				_recv._hasData = false;
+				result = errno;
+			}
 
-		_recv._recvBuf = NULL;
-		_recv._recvLen = 0;
-		IoSockptr tmpptr(std::move(_event.inptr));
-		onRead(ret, result);
+			_recv.setInvalid();
+			onRead(bytes, result);
+			return true;//exec one
+
+		};
 	}
 
 	void IoSocket::close()
 	{
+		if (_close) return;
+		_close = true;
+
+		if (_fd != INVALID_SOCKET){
+			::shutdown(_fd, SHUT_RDWR);
+		}
+	}
+
+	void IoSocket::finalClose()
+	{
 		if (_fd != INVALID_SOCKET)
 		{
-			_event.inptr = nullptr;
-			_event.outptr = nullptr;
-
 			if (_loop) {
 				_loop->registerEpoll(EPOLL_CTL_DEL, _fd, &_event._ev);
 			}
-			::shutdown(_fd, SHUT_RDWR);
 			::close(_fd);
 			_fd = INVALID_SOCKET;
 		}

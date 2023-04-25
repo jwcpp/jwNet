@@ -139,7 +139,6 @@ namespace net
                 return false;
             }
         }
-
         _connHandle.sockptr = shared_from_this();
         
         return true;
@@ -194,14 +193,19 @@ namespace net
     {
         if (type == IocpHandle::eIH_CONNECT)
         {
+            if (!err) {
+                //solve: [shutdown() errno == WSAENOTCONN]
+                setsockopt(_fd,
+                    SOL_SOCKET,
+                    SO_UPDATE_CONNECT_CONTEXT,
+                    NULL,
+                    0);
+            }
             onConnect(err);
         }
         else if (type == IocpHandle::eIH_READ)
         {
             onRead(bytes, err);
-            if (err || bytes == 0) {
-                close();
-            }
         }
         else if (type == IocpHandle::eIH_WRITE)
         {
@@ -213,6 +217,7 @@ namespace net
     {
         if (_fd != INVALID_SOCKET)
         {
+            //shutdown(_fd, SD_BOTH);
             //CancelIo((HANDLE)_fd);
             closesocket(_fd);
             _fd = INVALID_SOCKET;

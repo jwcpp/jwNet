@@ -23,8 +23,7 @@ namespace net {
 	typedef std::shared_ptr<class IoSocket> IoSockptr;
 	struct SEpollSocket : public SEpollEvent
 	{
-		IoSockptr inptr;
-		IoSockptr outptr;
+		IoSockptr sockptr;
 	};
 
 	struct IoRecive
@@ -34,17 +33,20 @@ namespace net {
 		}
 		char* _recvBuf;
 		int   _recvLen;
-		bool  _isRead;
+		bool  _hasData;
 
-		inline bool isValid()
-		{
+		inline bool isValid(){
 			return _recvBuf && _recvLen > 0;
+		}
+		inline void setInvalid() {
+			_recvBuf = NULL;
+			_recvLen = 0;
 		}
 
 		void reset() {
 			_recvBuf = NULL;
 			_recvLen = 0;
-			_isRead = false;
+			_hasData = false;
 		}
 	};
 
@@ -61,12 +63,13 @@ namespace net {
 		bool read(char* buf, int len);
 
 		void onEpollEv(uint32 ev);
-		void handleRead();
 		void addEpoll(NetLoop * loop, int fd);
 		void close();
 		void setAddrs(struct sockaddr* addrs) { _ipaddr = addrs; }
 		const IPAddres* getAddrs() const { return &_ipaddr; }
-
+	private:
+		void finalClose();
+		bool handleRead();
 	protected:
 		virtual void onConnect(int err) = 0;
 		virtual void onRead(int bytes, int err) = 0;
@@ -77,7 +80,8 @@ namespace net {
 		NetLoop* _loop;
 		IPAddres _ipaddr;
 		SEpollSocket _event;
-		bool isconnect = false;
+		bool _isconnect = false;
+		bool _close;
 
 		IoRecive _recv;
 		char* _writeBuf;
